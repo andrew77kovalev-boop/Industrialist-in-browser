@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Industrialist</title>
+<style>
+  body { margin: 0; overflow: hidden; font-family: sans-serif; }
+  canvas { display: block; }
+  /* Внизу только две кнопки: Строить и Снос */
+  #bar { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; }
+  #bar button { padding: 10px 22px; font-size: 16px; font-weight: bold; color: #fff; cursor: pointer;
+                background: rgba(20,24,30,.8); border: 2px solid rgba(255,255,255,.15); border-radius: 10px; }
+  #bar button:hover { border-color: rgba(255,255,255,.4); }
+  #bar button.active { background: #d89a10; border-color: #ffd54a; }
+  #bar small { opacity: .6; font-weight: normal; }
+  /* Меню строительства посреди экрана */
+  #build-menu { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 640px; display: none;
+                flex-direction: column; gap: 12px; padding: 16px; color: #fff;
+                background: rgba(20,24,30,.92); border: 2px solid rgba(255,255,255,.12); border-radius: 14px;
+                box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #build-menu.open { display: flex; }
+  #tabs { display: flex; gap: 6px; border-bottom: 1px solid rgba(255,255,255,.12); padding-bottom: 10px; }
+  #tabs button { padding: 7px 14px; font-size: 14px; color: #ccc; cursor: pointer;
+                 background: transparent; border: none; border-radius: 8px; }
+  #tabs button:hover { background: rgba(255,255,255,.08); }
+  #tabs button.active { background: #d89a10; color: #fff; }
+  #tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; min-height: 140px; align-content: start; }
+  .tile { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 6px; cursor: pointer;
+          color: #fff; font-size: 13px; background: rgba(255,255,255,.06);
+          border: 2px solid transparent; border-radius: 10px; }
+  .tile:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.3); }
+  .tile.active { border-color: #ffd54a; }
+  .tile.poor { opacity: .4; }
+  .tile img { width: 72px; height: 72px; }
+  .tile .price { color: #ffd54a; font-weight: bold; }
+  #keys { font-size: 12px; color: #999; text-align: center; }
+  #money { position: fixed; top: 12px; right: 12px; color: #ffd54a; font-weight: bold; font-size: 18px;
+           padding: 8px 16px; background: rgba(20,24,30,.8); border: 2px solid rgba(255,255,255,.15); border-radius: 10px; }
+  #tip { position: fixed; display: none; pointer-events: none; color: #fff; background: rgba(0,0,0,.75);
+         padding: 6px 10px; border-radius: 4px; font-size: 13px; white-space: pre; }
+  /* "+5" над продажей: всплывает и тает */
+  .sale { position: fixed; pointer-events: none; color: #ffe066; font-weight: bold; font-size: 16px;
+          text-shadow: 0 1px 3px #000; animation: rise 1s ease-out forwards; }
+  #cheats { position: fixed; top: 55px; right: 10px; display: none; flex-direction: column; gap: 6px;
+            color: #fff; background: rgba(0,0,0,.75); padding: 10px; border-radius: 6px; font-size: 14px; }
+  #cheats.open { display: flex; }
+  #cheats button { padding: 4px 10px; font-size: 14px; border: 2px solid #444; border-radius: 4px; background: #eee; cursor: pointer; }
+  #cheats button.active { background: #ffd54a; border-color: #c80; }
+  @keyframes rise {
+    from { transform: translate(-50%, 0); opacity: 1; }
+    to   { transform: translate(-50%, -40px); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="money"></div>
+<div id="cheats">
+  <b>Читы</b>
+  <div>Скорость:
+    <button data-speed="1" class="active">×1</button>
+    <button data-speed="2">×2</button>
+    <button data-speed="5">×5</button>
+    <button data-speed="10">×10</button>
+  </div>
+  <div>Деньги:
+    <button data-money="1000">+1 000</button>
+    <button data-money="10000">+10 000</button>
+  </div>
+</div>
+<div id="tip"></div>
+<div id="bar">
+  <button id="build-btn">Строить <small>B</small></button>
+  <button id="demolish-btn">Снос <small>X</small></button>
+</div>
+<div id="build-menu">
+  <div id="tabs"></div>
+  <div id="tiles"></div>
+  <div id="keys">ЛКМ — поставить · R — повернуть · F — отразить · Esc — отмена ·
+    ПКМ — вращать камеру · колесо — зум · средняя кнопка — двигать · F1 — читы</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+const SIZE = 10; // поле SIZE × SIZE клеток
+
+// ---------- Данные ----------
+
+const START_MONEY = 500;
+const TICK_MS = 100;        // логика: 10 тиков в секунду
+const PIPE_SPEED = 0.05;    // труба: клетка за 2 секунды (доля клетки за тик)
+const PIPE_GAP = 0.1;       // расстояние между предметами в трубе (в клетке помещается 10)
+const PIPE_MAX_ITEMS = 10;  // предметов в одной клетке трубы
+const PIPE_OUT_TICKS = 20;  // труба выпускает 1 предмет в 2 секунды
+const LOG_TICKS = 100;      // подсказка трубы помнит последние 10 секунд
+const FURNACE_BUFFER = 5;   // сколько руды печь держит в очереди
+const STORAGE_MAX = 100;    // вместимость склада
+const STORAGE_OUT_TICKS = 20; // склад выдаёт 1 предмет в 2 секунды
+
+const DIRS = [[1, 0], [0, 1], [-1, 0], [0, -1]]; // dir: 0 = +x, 1 = +z, 2 = -x, 3 = -z
+const PIPES = ['Pipe', 'PipeTurn']; // возят предметы, работают одинаково
+// Стороны здания относительно его стрелки: 0 спереди, 1 справа, 2 сзади, 3 слева
+const SPLITTER_OUTS = [0, 3, 1]; // разветвитель отдаёт по очереди: вперёд, влево, вправо
+
+// shape — как предмет выглядит в трубе: lump — комок, rock — камень, ingot — брусок
+const ITEMS = {
+  Coal:        { name: 'Уголь',           price: 5,  color: 0x1a1a1a, shape: 'lump' },
+  IronOre:     { name: 'Железная руда',   price: 10, color: 0x8fa0b3, shape: 'rock' },
+  CopperOre:   { name: 'Медная руда',     price: 7,  color: 0xd2691e, shape: 'rock' },
+  IronIngot:   { name: 'Железный слиток', price: 25, color: 0xe3e9f0, shape: 'ingot' },
+  CopperIngot: { name: 'Медный слиток',   price: 20, color: 0xf2a572, shape: 'ingot' }
+};
+
+// что печь делает из чего: ticks — время плавки
+const RECIPES = {
+  IronOre:   { out: 'IronIngot',   ticks: 50 },
+  CopperOre: { out: 'CopperIngot', ticks: 50 }
+};
+
+// grid: ключ "x,z" -> { type, x, z, dir }
+// у экстрактора ещё cooldown — тиков до следующего предмета
+// у трубы: items [{ type, progress, prev, fromX, fromZ }] (первый — самый передний),
+//   out — тиков до следующего выпуска, log [{ tick, type }] — что вышло за последние 10 секунд
+// у печи: inputs — очередь руды, cooking — текущий рецепт, left — тиков до конца плавки
+// у разветвителя: item — предмет внутри (или null), next — какой выход следующий
+// у объединителя: slots — по одному предмету на каждую сторону-вход, next — чей вход следующий;
+//   mirror — отражён (вход справа вместо слева)
+// у склада: items [{ type }] — очередь, out — тиков до следующей выдачи
+const grid = {};
+let money = START_MONEY;
+let tickCount = 0;
+const sales = []; // свежие продажи { x, z, price }: логика кладёт, отрисовка показывает "+N" и очищает
+
+// Модельки: рисуют здание в группу g. Направление "вперёд" = +x.
+// makes / ticks — что экстрактор добывает и раз в сколько тиков
+const BUILDINGS = {
+  CoalExtractor: {
+    name: 'Угольный экстрактор', price: 100, makes: 'Coal', ticks: 50,
+    draw(g) { drawExtractor(g, 0x222222, 0.55); }
+  },
+  CopperExtractor: {
+    name: 'Медный экстрактор', price: 200, makes: 'CopperOre', ticks: 100,
+    draw(g) { drawExtractor(g, 0xd2691e, 0.75); }
+  },
+  IronExtractor: {
+    name: 'Железный экстрактор', price: 500, makes: 'IronOre', ticks: 150,
+    draw(g) { drawExtractor(g, 0x9aa7b5, 0.95); }
+  },
+  // Предметная труба: закрытый квадратный короб со стеклянной крышей, чтобы было видно предметы
+  Pipe: {
+    name: 'Предметная труба', price: 20,
+    draw(g) {
+      g.add(box(1, 0.05, 0.6, DUCT_DARK, 0, 0.08, 0, 'metal'));      // дно
+      g.add(box(1, 0.24, 0.04, DUCT, 0, 0.08, 0.28, 'metal'));       // стенки
+      g.add(box(1, 0.24, 0.04, DUCT, 0, 0.08, -0.28, 'metal'));
+      g.add(glass(1, 0.56, 0, 0));                                   // стеклянная крыша
+      g.add(collar(0));                                              // ободы на стыках
+      g.add(collar(2));
+      g.add(box(0.1, 0.08, 0.5, 0x3a3a3a, 0, 0, 0));                 // опора
+      g.add(flatArrow(0xffd27a, 0, 0.345, 0, 0.26));                 // стрелка на крыше
+    }
+  },
+  // поворот: принимает только слева (отражённый — справа), отдаёт вперёд
+  PipeTurn: {
+    name: 'Поворот трубы', price: 20, canMirror: true,
+    draw(g) {
+      g.add(box(0.8, 0.05, 0.6, DUCT_DARK, 0.1, 0.08, 0, 'metal'));  // дно: центр и выход
+      g.add(box(0.6, 0.05, 0.2, DUCT_DARK, 0, 0.08, -0.4, 'metal')); // дно: вход слева
+      g.add(box(0.04, 0.24, 0.8, DUCT, -0.28, 0.08, -0.1, 'metal')); // внешние стенки
+      g.add(box(0.8, 0.24, 0.04, DUCT, 0.1, 0.08, 0.28, 'metal'));
+      g.add(box(0.24, 0.24, 0.04, DUCT, 0.38, 0.08, -0.28, 'metal')); // внутренний угол
+      g.add(box(0.04, 0.24, 0.24, DUCT, 0.28, 0.08, -0.38, 'metal'));
+      g.add(glass(0.78, 0.56, 0.11, 0));                             // стеклянная крыша
+      g.add(glass(0.56, 0.22, 0, -0.39));
+      g.add(collar(0));
+      g.add(collar(3));
+      g.add(box(0.1, 0.08, 0.5, 0x3a3a3a, 0, 0, 0));                 // опора
+      g.add(sideArrow(0xffd27a, 3, 0.345, true));                    // откуда входит
+      g.add(sideArrow(0xffd27a, 0, 0.345, false));                   // куда выходит
+    }
+  },
+  LiquidPipe: {
+    name: 'Жидкая труба', price: 20,
+    draw(g) {
+      liquidTube(g, 0, -0.5, 0.5, 0.2, PIPE_COPPER);                 // труба вдоль +x
+      liquidTube(g, 0, 0.42, 0.5, 0.25, PIPE_FLANGE);                // фланцы на концах
+      liquidTube(g, 2, 0.42, 0.5, 0.25, PIPE_FLANGE);
+      liquidSupport(g);
+      g.add(flatArrow(0xe0c090, 0, 0.545, 0, 0.24));                 // стрелка сверху
+    }
+  },
+  // Жидкие повороты, разветвители и объединители пока ничего не делают (жидкостей нет)
+  LiquidPipeTurn: {
+    name: 'Жидкий поворот', price: 20, canMirror: true,
+    draw(g) {
+      // плавное колено: четверть бублика от левого края к переднему
+      const elbow = part(new THREE.TorusGeometry(0.5, 0.2, 16, 24, Math.PI / 2), PIPE_COPPER, 0.5, 0.34, -0.5, 'metal');
+      elbow.rotation.set(-Math.PI / 2, 0, Math.PI);
+      g.add(elbow);
+      liquidTube(g, 0, 0.42, 0.5, 0.25, PIPE_FLANGE);                // фланцы
+      liquidTube(g, 3, 0.42, 0.5, 0.25, PIPE_FLANGE);
+      liquidSupport(g, 0.15, -0.15);                                 // стойка под серединой колена
+      g.add(sideArrow(0xe0c090, 3, 0.545, true));
+      g.add(sideArrow(0xe0c090, 0, 0.545, false));
+    }
+  },
+  LiquidSplitter: {
+    name: 'Жидкий разветвитель', price: 100,
+    draw(g) { drawLiquidHub(g, [2], SPLITTER_OUTS); }
+  },
+  LiquidMerger2: {
+    name: 'Жидкий объединитель на 2', price: 100, canMirror: true,
+    draw(g) { drawLiquidHub(g, [2, 3], [0]); }
+  },
+  LiquidMerger3: {
+    name: 'Жидкий объединитель на 3', price: 100,
+    draw(g) { drawLiquidHub(g, [1, 2, 3], [0]); }
+  },
+  Seller: {
+    name: 'Продажа', price: 50,
+    draw(g) {
+      g.add(box(0.92, 0.1, 0.92, 0x1f5e3a, 0, 0, 0));                // плита
+      g.add(box(0.8, 0.45, 0.8, 0x2e8b57, 0, 0.1, 0));               // корпус
+      g.add(box(0.84, 0.06, 0.84, 0xd09a10, 0, 0.55, 0));            // золотая кромка
+      g.add(box(0.5, 0.02, 0.12, 0x111111, 0, 0.61, 0));             // щель для монет
+      // монета крутится над продажей
+      const coin = new THREE.Group();
+      coin.position.set(0, 0.9, 0);
+      const disc = part(new THREE.CylinderGeometry(0.2, 0.2, 0.05, 24), 0xf0b000, 0, 0, 0, 'glow');
+      disc.material.emissiveIntensity = 0.3;                         // золото слегка светится
+      disc.rotation.x = Math.PI / 2;                                 // стоит на ребре
+      coin.add(disc);
+      g.add(coin);
+      g.userData.coin = coin;
+    }
+  },
+  Furnace: {
+    name: 'Печь', price: 500,
+    draw(g) {
+      g.add(box(0.92, 0.08, 0.92, 0x4a4a4a, 0, 0, 0));               // фундамент
+      g.add(box(0.84, 0.56, 0.84, 0x9a4a32, 0, 0.08, 0));            // кирпичный корпус
+      for (const y of [0.22, 0.36, 0.5]) {
+        g.add(box(0.85, 0.015, 0.85, 0x5a2a1a, 0, y, 0));            // швы между кирпичами
+      }
+      g.add(box(0.9, 0.07, 0.9, 0x666666, 0, 0.64, 0, 'metal'));     // крышка
+      g.add(cyl(0.11, 0.55, 0x444444, -0.22, 0.71, -0.22, 'metal')); // дымоход
+      g.add(cyl(0.14, 0.05, 0x333333, -0.22, 1.26, -0.22, 'metal'));
+      const hatch = box(0.03, 0.2, 0.34, 0xff6a00, 0.42, 0.2, 0, 'glow'); // окошко, горит при плавке
+      g.add(hatch);
+      g.userData.glow = hatch.material;
+      g.add(flatArrow(0xffaa00, 0.2, 0.715, 0, 0.22));               // куда выходит слиток
+      // дым: кубики поднимаются из дымохода, видны только при плавке
+      g.userData.smoke = [];
+      for (let i = 0; i < 3; i++) {
+        const puff = box(0.12, 0.12, 0.12, 0xbbbbbb, -0.22, 1.3, -0.22);
+        puff.material.transparent = true;
+        puff.visible = false;
+        g.add(puff);
+        g.userData.smoke.push(puff);
+      }
+    }
+  },
+  Splitter: {
+    name: 'Разветвитель', price: 100,
+    draw(g) { drawLogistic(g, 0x2f6fa8, [2], SPLITTER_OUTS); }
+  },
+  // inputs — с каких сторон объединитель принимает предметы
+  Merger2: {
+    name: 'Объединитель на 2', price: 100, inputs: [2, 3], canMirror: true,
+    draw(g) { drawLogistic(g, 0x2f8f7f, [2, 3], [0]); }
+  },
+  Merger3: {
+    name: 'Объединитель на 3', price: 100, inputs: [1, 2, 3],
+    draw(g) { drawLogistic(g, 0x2f8f7f, [1, 2, 3], [0]); }
+  },
+  Storage: {
+    name: 'Склад', price: 200,
+    draw(g) {
+      g.add(box(0.92, 0.08, 0.92, 0x4a4a4a, 0, 0, 0));               // плита
+      g.add(box(0.84, 0.62, 0.84, 0x9a7440, 0, 0.08, 0));            // деревянный ящик
+      for (const y of [0.24, 0.4, 0.56]) {
+        g.add(box(0.85, 0.015, 0.85, 0x5e4524, 0, y, 0));            // щели между досками
+      }
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        g.add(box(0.08, 0.64, 0.08, 0x555555, sx * 0.4, 0.08, sz * 0.4, 'metal')); // уголки
+      }
+      g.add(box(0.9, 0.06, 0.9, 0x6b5030, 0, 0.7, 0));               // крышка
+      g.add(box(0.12, 0.2, 0.4, 0x555555, 0.44, 0.08, 0, 'metal'));  // выход
+      g.add(sideArrow(0xffaa00, 0, 0.765, false));
+    }
+  }
+};
+
+// Вкладки меню строительства
+const GROUPS = [
+  { name: 'Экстракторы', types: ['CoalExtractor', 'CopperExtractor', 'IronExtractor'] },
+  { name: 'Трубы',       types: ['Pipe', 'PipeTurn', 'LiquidPipe', 'LiquidPipeTurn'] },
+  { name: 'Продажа',     types: ['Seller'] },
+  { name: 'Печь',        types: ['Furnace'] },
+  { name: 'Логистика',   types: ['Splitter', 'Merger2', 'Merger3', 'Storage',
+                                         'LiquidSplitter', 'LiquidMerger2', 'LiquidMerger3'] }
+];
+
+// ---------- Помощники для моделей ----------
+
+const DUCT = 0x7d8791;        // предметная труба: стальные стенки
+const DUCT_DARK = 0x3e444b;   // её дно и ободы
+const PIPE_COPPER = 0x9a5a30; // жидкая труба
+const PIPE_FLANGE = 0x5a3418; // её фланцы
+
+// Цвет из привычного hex (как в редакторе цветов) в линейный, в котором считает освещение
+function linear(hex) {
+  return new THREE.Color(hex).convertSRGBToLinear();
+}
+// look: 'metal' — блестит, 'glow' — светится сам, без look — матовый
+function material(color, look) {
+  const m = new THREE.MeshStandardMaterial({ color: linear(color), roughness: 0.85, metalness: 0 });
+  if (look === 'metal') { m.roughness = 0.45; m.metalness = 0.5; }
+  if (look === 'glow') m.emissive.copy(linear(color));
+  return m;
+}
+function part(geometry, color, x, y, z, look) {
+  const m = new THREE.Mesh(geometry, material(color, look));
+  m.position.set(x, y, z);
+  return m;
+}
+// y — низ блока
+function box(w, h, d, color, x, y, z, look) {
+  return part(new THREE.BoxGeometry(w, h, d), color, x, y + h / 2, z, look);
+}
+// вертикальный цилиндр, y — низ
+function cyl(r, h, color, x, y, z, look) {
+  return part(new THREE.CylinderGeometry(r, r, h, 16), color, x, y + h / 2, z, look);
+}
+// плоская стрелка-галочка, лежит горизонтально и смотрит в +x
+function flatArrow(color, x, y, z, size) {
+  const s = new THREE.Shape();
+  s.moveTo(size / 2, 0);
+  s.lineTo(-size / 2, size / 2);
+  s.lineTo(-size / 4, 0);
+  s.lineTo(-size / 2, -size / 2);
+  const m = part(new THREE.ShapeGeometry(s), color, x, y, z, 'glow');
+  m.material.emissiveIntensity = 0.35; // светится слегка, чтобы не слепило
+  m.rotation.x = -Math.PI / 2;
+  return m;
+}
+// Экстрактор: основание, буровая вышка с крутящимся буром, крыша цвета руды.
+// height — высота вышки, у каждого экстрактора своя
+function drawExtractor(g, oreColor, height) {
+  const frame = 0xc8a02a;   // жёлтая рама вышки
+  const cx = -0.12, half = 0.2, base = 0.26;
+  g.add(box(0.92, 0.12, 0.92, 0x4a4a4a, 0, 0, 0));               // плита
+  g.add(box(0.8, 0.14, 0.8, 0x6d6d6d, 0, 0.12, 0, 'metal'));     // основание
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    g.add(box(0.06, height, 0.06, frame, cx + sx * half, base, sz * half, 'metal')); // стойки
+  }
+  for (const y of [base + height * 0.5, base + height - 0.05]) {  // перекладины
+    const len = half * 2 + 0.06;
+    g.add(box(len, 0.05, 0.05, frame, cx, y, half, 'metal'));
+    g.add(box(len, 0.05, 0.05, frame, cx, y, -half, 'metal'));
+    g.add(box(0.05, 0.05, len, frame, cx + half, y, 0, 'metal'));
+    g.add(box(0.05, 0.05, len, frame, cx - half, y, 0, 'metal'));
+  }
+  g.add(box(0.5, 0.12, 0.5, oreColor, cx, base + height, 0));    // крыша цвета руды
+  // бур с лопастями, чтобы было видно вращение
+  const drill = new THREE.Group();
+  drill.position.set(cx, base, 0);
+  drill.add(cyl(0.05, height, 0x999999, 0, 0, 0, 'metal'));
+  for (let i = 0; i < 4; i++) {
+    const blade = box(0.24, 0.04, 0.05, 0x555555, 0, 0.08 + i * height * 0.2, 0, 'metal');
+    blade.rotation.y = i * Math.PI / 4;
+    drill.add(blade);
+  }
+  g.add(drill);
+  g.userData.drill = drill;
+  g.add(flatArrow(0xffaa00, 0.28, base + 0.005, 0, 0.22));       // куда выходит добыча
+}
+// Стрелка на стороне side (0 вперёд, 1 вправо, 2 назад, 3 влево); inward — смотрит внутрь
+function sideArrow(color, side, y, inward) {
+  const d = DIRS[side];
+  const a = flatArrow(color, d[0] * 0.18, y, d[1] * 0.18, 0.2);
+  a.rotation.z = -side * Math.PI / 2 + (inward ? Math.PI : 0);
+  return a;
+}
+// Разветвитель / объединитель: корпус, патрубки на входах и выходах, стрелки на крышке
+function drawLogistic(g, color, ins, outs) {
+  g.add(box(0.92, 0.08, 0.92, 0x4a4a4a, 0, 0, 0));               // плита
+  g.add(box(0.62, 0.32, 0.62, color, 0, 0.08, 0, 'metal'));      // корпус
+  g.add(box(0.66, 0.05, 0.66, 0x333333, 0, 0.4, 0, 'metal'));    // крышка
+  for (const s of ins.concat(outs)) {
+    const d = DIRS[s];
+    const along = d[0] !== 0;                                    // патрубок вдоль x или вдоль z
+    g.add(box(along ? 0.16 : 0.4, 0.2, along ? 0.4 : 0.16, 0x555555, d[0] * 0.38, 0.08, d[1] * 0.38, 'metal'));
+  }
+  for (const s of ins) g.add(sideArrow(0xe0c090, s, 0.455, true));   // входы — светлые, внутрь
+  for (const s of outs) g.add(sideArrow(0xffaa00, s, 0.455, false)); // выходы — оранжевые, наружу
+}
+// Стекло на крыше предметной трубы: w × d, центр (x, z)
+function glass(w, d, x, z) {
+  const m = box(w, 0.02, d, 0xbfe6ff, x, 0.32, z);
+  m.material.transparent = true;
+  m.material.opacity = 0.25;
+  m.material.roughness = 0.1;
+  m.material.depthWrite = false;
+  return m;
+}
+// Обод-рамка на стыке предметной трубы со стороны side
+function collar(side) {
+  const c = new THREE.Group();
+  c.add(box(0.06, 0.05, 0.66, DUCT_DARK, 0.47, 0.06, 0, 'metal'));   // низ
+  c.add(box(0.06, 0.04, 0.66, DUCT_DARK, 0.47, 0.32, 0, 'metal'));   // верх
+  c.add(box(0.06, 0.3, 0.05, DUCT_DARK, 0.47, 0.06, 0.305, 'metal')); // бока
+  c.add(box(0.06, 0.3, 0.05, DUCT_DARK, 0.47, 0.06, -0.305, 'metal'));
+  c.rotation.y = -side * Math.PI / 2;
+  return c;
+}
+// Кусок круглой трубы от центра клетки в сторону side, на расстоянии от from до to
+function liquidTube(g, side, from, to, r, color) {
+  const d = DIRS[side];
+  const mid = (from + to) / 2;
+  const t = part(new THREE.CylinderGeometry(r, r, to - from, 20), color, d[0] * mid, 0.34, d[1] * mid, 'metal');
+  if (d[0] !== 0) t.rotation.z = Math.PI / 2; else t.rotation.x = Math.PI / 2;
+  g.add(t);
+}
+// Стойка под круглой трубой: ножка и хомут
+function liquidSupport(g, x = 0, z = 0) {
+  g.add(box(0.2, 0.03, 0.2, 0x3a3a3a, x, 0, z));                 // плита
+  g.add(cyl(0.04, 0.12, 0x555555, x, 0.03, z, 'metal'));         // ножка
+}
+// Жидкий разветвитель / объединитель: бочка, патрубки с фланцами, стрелки на крышке
+function drawLiquidHub(g, ins, outs) {
+  g.add(box(0.92, 0.08, 0.92, 0x4a4a4a, 0, 0, 0));               // плита
+  g.add(cyl(0.3, 0.46, PIPE_COPPER, 0, 0.08, 0, 'metal'));       // бочка
+  g.add(cyl(0.33, 0.05, PIPE_FLANGE, 0, 0.54, 0, 'metal'));      // крышка
+  for (const s of ins.concat(outs)) {
+    liquidTube(g, s, 0.25, 0.5, 0.2, PIPE_COPPER);               // патрубок
+    liquidTube(g, s, 0.42, 0.5, 0.25, PIPE_FLANGE);              // фланец
+  }
+  for (const s of ins) g.add(sideArrow(0xe0c090, s, 0.595, true));
+  for (const s of outs) g.add(sideArrow(0xffaa00, s, 0.595, false));
+}
+function createModel(type) {
+  const g = new THREE.Group();
+  BUILDINGS[type].draw(g);
+  // прозрачное (стекло, дым) тень не отбрасывает
+  g.traverse(o => { if (o.isMesh) { o.castShadow = !o.material.transparent; o.receiveShadow = true; } });
+  return g;
+}
+// mirror — отразить (право и лево меняются местами)
+function placeModel(model, x, z, dir, mirror) {
+  model.position.set(x + 0.5, 0, z + 0.5);
+  model.rotation.y = -dir * Math.PI / 2;
+  model.scale.z = mirror ? -1 : 1;
+}
+
+// ---------- Сцена ----------
+
+// Небо: градиент от синего сверху к светлому у горизонта
+function skyTexture() {
+  const c = document.createElement('canvas');
+  c.width = 1;
+  c.height = 256;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#4a8fd6');
+  grad.addColorStop(1, '#d6ecf7');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 1, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  return t;
+}
+
+// Трава: каждая клетка чуть своего оттенка (1 пиксель = 1 клетка)
+function groundTexture() {
+  const c = document.createElement('canvas');
+  c.width = SIZE;
+  c.height = SIZE;
+  const ctx = c.getContext('2d');
+  for (let x = 0; x < SIZE; x++) {
+    for (let y = 0; y < SIZE; y++) {
+      ctx.fillStyle = 'hsl(95, 30%, ' + (31 + Math.random() * 5) + '%)';
+      ctx.fillRect(x, y, 1, 1);
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.encoding = THREE.sRGBEncoding;
+  t.magFilter = THREE.NearestFilter;  // чёткие клетки, без размытия
+  t.minFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  return t;
+}
+
+const scene = new THREE.Scene();
+scene.background = skyTexture();
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(SIZE / 2, 9, SIZE + 4);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap; // мягкие тени
+renderer.outputEncoding = THREE.sRGBEncoding;     // правильная гамма: цвета не "кислотные"
+renderer.toneMapping = THREE.ACESFilmicToneMapping; // мягкие яркие места, как в кино
+renderer.toneMappingExposure = 0.85;
+document.body.appendChild(renderer.domElement);
+
+// Свет: слабая подсветка от неба + сильное солнце слева сверху,
+// чтобы у зданий были светлые и тёмные грани, а тени падали вправо, на виду
+scene.add(new THREE.HemisphereLight(linear(0xcfe3ff), linear(0x5a5040), 0.7));
+const sun = new THREE.DirectionalLight(linear(0xfff0d8), 2.0);
+sun.position.set(SIZE / 2 - 7, 11, SIZE / 2 + 3);
+sun.target.position.set(SIZE / 2, 0, SIZE / 2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -SIZE;       // область, где считаются тени, — всё поле
+sun.shadow.camera.right = SIZE;
+sun.shadow.camera.top = SIZE;
+sun.shadow.camera.bottom = -SIZE;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 40;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+scene.add(sun.target);
+
+// Камера: ПКМ — вращение, средняя — перемещение, колесо — зум, ЛКМ свободна для стройки
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.mouseButtons = { LEFT: -1, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.ROTATE };
+controls.target.set(SIZE / 2, 0, SIZE / 2);
+controls.minDistance = 4;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI / 2 - 0.05; // не уходить под землю
+controls.update();
+
+// Земля и сетка
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(SIZE, SIZE),
+  new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.set(SIZE / 2, 0, SIZE / 2);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Поле — "остров": под травой слой земли, под ним камень
+const dirt = new THREE.Mesh(new THREE.BoxGeometry(SIZE, 0.5, SIZE), material(0x7a5638));
+dirt.position.set(SIZE / 2, -0.26, SIZE / 2);
+scene.add(dirt);
+const stone = new THREE.Mesh(new THREE.BoxGeometry(SIZE - 0.6, 0.8, SIZE - 0.6), material(0x6a6a6a));
+stone.position.set(SIZE / 2, -0.9, SIZE / 2);
+scene.add(stone);
+
+const gridLines = new THREE.GridHelper(SIZE, SIZE, 0x2f4a1f, 0x2f4a1f);
+gridLines.position.set(SIZE / 2, 0.01, SIZE / 2);
+gridLines.material.transparent = true;
+gridLines.material.opacity = 0.3; // сетка еле заметная
+scene.add(gridLines);
+
+// ---------- Состояние стройки ----------
+
+const meshes = {};       // "x,z" -> 3D-модель здания (рисует то, что лежит в grid)
+let selected = null;     // тип здания, которое ставим
+let demolish = false;    // режим сноса
+let dir = 0;             // текущее направление
+let mirror = false;      // отражение (F), только для зданий с canMirror
+let hover = null;        // клетка под курсором {x, z} или null
+let cursor = { x: 0, y: 0 }; // положение курсора на экране (для подсказки)
+let ghost = null;        // призрак здания
+
+// Красная плашка в режиме сноса
+const eraser = new THREE.Mesh(
+  new THREE.BoxGeometry(0.95, 0.3, 0.95),
+  new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.5 })
+);
+eraser.position.y = 0.15;
+eraser.visible = false;
+scene.add(eraser);
+
+function select(type) {
+  selected = type;
+  demolish = false;
+  makeGhost();
+  updateUI();
+}
+
+function toggleDemolish() {
+  demolish = !demolish;
+  selected = null;
+  makeGhost();
+  updateUI();
+}
+
+function cancel() {
+  selected = null;
+  demolish = false;
+  makeGhost();
+  updateUI();
+}
+
+function makeGhost() {
+  if (ghost) scene.remove(ghost);
+  ghost = null;
+  if (selected) {
+    ghost = createModel(selected);
+    ghost.traverse(o => {
+      o.castShadow = false;
+      if (o.material) { o.material.transparent = true; o.material.opacity = 0.6; }
+    });
+    scene.add(ghost);
+  }
+  refreshCursor();
+}
+
+// Показывает призрак / плашку сноса в клетке под курсором
+function refreshCursor() {
+  if (ghost) ghost.visible = false;
+  eraser.visible = false;
+  if (!hover) return;
+  const occupied = !!grid[hover.x + ',' + hover.z];
+
+  if (demolish && occupied) {
+    eraser.position.set(hover.x + 0.5, 0.15, hover.z + 0.5);
+    eraser.visible = true;
+  }
+  if (ghost) {
+    placeModel(ghost, hover.x, hover.z, dir, mirror && BUILDINGS[selected].canMirror);
+    const blocked = occupied || money < BUILDINGS[selected].price;
+    const emissive = blocked ? 0x660000 : 0x004400; // красный — нельзя (занято или нет денег), зелёный — можно
+    ghost.traverse(o => { if (o.material) o.material.emissive.setHex(emissive); });
+    ghost.visible = true;
+  }
+}
+
+function build(x, z) {
+  const key = x + ',' + z;
+  const def = BUILDINGS[selected];
+  if (grid[key] || money < def.price) return;
+  money -= def.price;
+  const b = { type: selected, x, z, dir, mirror: !!(mirror && def.canMirror) };
+  if (def.makes) b.cooldown = def.ticks;
+  if (PIPES.includes(selected)) { b.items = []; b.out = 0; b.log = []; }
+  if (selected === 'Furnace') { b.inputs = []; b.cooking = null; b.left = 0; }
+  if (selected === 'Splitter') { b.item = null; b.next = 0; }
+  if (def.inputs) { b.slots = [null, null, null, null]; b.next = 0; }
+  if (selected === 'Storage') { b.items = []; b.out = 0; }
+  grid[key] = b;
+  meshes[key] = createModel(selected);
+  placeModel(meshes[key], x, z, dir, b.mirror);
+  scene.add(meshes[key]);
+  refreshCursor();
+}
+
+function remove(x, z) {
+  const key = x + ',' + z;
+  if (!grid[key]) return;
+  money += Math.floor(BUILDINGS[grid[key].type].price / 2); // возврат 50 %
+  scene.remove(meshes[key]);
+  delete meshes[key];
+  delete grid[key];
+  refreshCursor();
+}
+
+// ---------- Ввод ----------
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+renderer.domElement.addEventListener('pointermove', e => {
+  cursor = { x: e.clientX, y: e.clientY };
+  mouse.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(mouse, camera);
+  const hit = raycaster.intersectObject(ground)[0];
+  hover = hit ? { x: Math.floor(hit.point.x), z: Math.floor(hit.point.z) } : null;
+  refreshCursor();
+});
+
+renderer.domElement.addEventListener('pointerleave', () => {
+  hover = null;
+  refreshCursor();
+});
+
+renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !hover) return;
+  if (demolish) remove(hover.x, hover.z);
+  else if (selected) build(hover.x, hover.z);
+});
+
+// e.code, чтобы работало на любой раскладке
+addEventListener('keydown', e => {
+  if (e.code === 'KeyR') { dir = (dir + 1) % 4; refreshCursor(); }
+  else if (e.code === 'KeyF') { mirror = !mirror; refreshCursor(); }
+  else if (e.code === 'KeyX') toggleDemolish();
+  else if (e.code === 'F1') {
+    e.preventDefault(); // иначе браузер откроет свою справку
+    document.getElementById('cheats').classList.toggle('open');
+  }
+  else if (e.code === 'KeyB') openMenu(!buildMenu.classList.contains('open'));
+  else if (e.code === 'Escape') {
+    if (buildMenu.classList.contains('open')) openMenu(false); // сначала закрыть меню
+    else cancel();
+  }
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- Меню строительства ----------
+
+// Картинки зданий для плиток меню: каждое здание один раз рисуется в маленький отдельный холст
+function makeIcons() {
+  const r = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  r.setSize(72, 72);
+  r.outputEncoding = THREE.sRGBEncoding;
+  r.toneMapping = THREE.ACESFilmicToneMapping;
+  r.toneMappingExposure = 0.85;
+  const s = new THREE.Scene();
+  s.add(new THREE.HemisphereLight(linear(0xcfe3ff), linear(0x5a5040), 0.9));
+  const light = new THREE.DirectionalLight(linear(0xfff0d8), 2.0);
+  light.position.set(2, 3, 2);
+  s.add(light);
+  const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
+  const icons = {};
+  for (const type in BUILDINGS) {
+    const m = createModel(type);
+    placeModel(m, -0.5, -0.5, 0, false); // центр клетки в начале координат, стрелка вправо
+    // камера смотрит на середину модели с расстояния по её размеру, чтобы модель заняла всю картинку
+    const bounds = new THREE.Box3().setFromObject(m);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3()).length();
+    cam.position.copy(center).add(new THREE.Vector3(-0.45, 0.55, 0.7).multiplyScalar(size * 1.9));
+    cam.lookAt(center);
+    s.add(m);
+    r.render(s, cam);
+    icons[type] = r.domElement.toDataURL();
+    s.remove(m);
+  }
+  r.dispose();
+  return icons;
+}
+const ICONS = makeIcons();
+
+// Меню строительства: вкладки по группам, в каждой — плитки зданий
+const buildMenu = document.getElementById('build-menu');
+const tabsBox = document.getElementById('tabs');
+const tilesBox = document.getElementById('tiles');
+const buildButton = document.getElementById('build-btn');
+const demolishButton = document.getElementById('demolish-btn');
+let tab = 0; // открытая вкладка
+
+function openMenu(open) {
+  buildMenu.classList.toggle('open', open);
+  if (open) showTab(tab);
+}
+
+function showTab(i) {
+  tab = i;
+  tabsBox.innerHTML = '';
+  GROUPS.forEach((group, k) => {
+    const t = document.createElement('button');
+    t.textContent = group.name;
+    t.classList.toggle('active', k === tab);
+    t.onclick = () => showTab(k);
+    tabsBox.appendChild(t);
+  });
+  tilesBox.innerHTML = '';
+  for (const type of GROUPS[tab].types) {
+    const tile = document.createElement('button');
+    tile.className = 'tile';
+    tile.dataset.type = type;
+    tile.classList.toggle('active', type === selected);
+    const img = document.createElement('img');
+    img.src = ICONS[type];
+    const name = document.createElement('div');
+    name.textContent = BUILDINGS[type].name;
+    const price = document.createElement('div');
+    price.className = 'price';
+    price.textContent = BUILDINGS[type].price;
+    tile.append(img, name, price);
+    tile.onclick = () => { select(type); openMenu(false); };
+    tilesBox.appendChild(tile);
+  }
+  updateTiles();
+}
+
+// Плитки, на которые не хватает денег, — тусклые
+function updateTiles() {
+  tilesBox.querySelectorAll('.tile').forEach(t => {
+    t.classList.toggle('poor', money < BUILDINGS[t.dataset.type].price);
+  });
+}
+
+buildButton.onclick = () => openMenu(!buildMenu.classList.contains('open'));
+demolishButton.onclick = toggleDemolish;
+
+function updateUI() {
+  buildButton.classList.toggle('active', !!selected);
+  demolishButton.classList.toggle('active', demolish);
+}
+
+// ---------- Логика (тики) ----------
+
+// С какой стороны здания b клетка (srcX, srcZ): 0 спереди, 1 справа, 2 сзади, 3 слева, -1 — не сосед.
+// У отражённого здания право и лево меняются местами.
+function sideOf(b, srcX, srcZ) {
+  const k = DIRS.findIndex(d => b.x + d[0] === srcX && b.z + d[1] === srcZ);
+  if (k < 0) return -1;
+  const side = (k - b.dir + 4) % 4;
+  return b.mirror && side % 2 === 1 ? 4 - side : side;
+}
+
+// Пытается отдать предмет в клетку (x, z). Источник — клетка (srcX, srcZ). Возвращает true, если приняли.
+function give(x, z, srcX, srcZ, itemType) {
+  const b = grid[x + ',' + z];
+  if (!b) return false;
+  const side = sideOf(b, srcX, srcZ);
+
+  if (b.type === 'Splitter') {
+    if (side !== 2 || b.item) return false; // принимает только сзади, по одному
+    b.item = itemType;
+    return true;
+  }
+
+  if (BUILDINGS[b.type].inputs) { // объединитель: на каждом входе своё место на 1 предмет
+    if (!BUILDINGS[b.type].inputs.includes(side) || b.slots[side]) return false;
+    b.slots[side] = itemType;
+    return true;
+  }
+
+  if (b.type === 'Storage') {
+    if (side === 0 || b.items.length >= STORAGE_MAX) return false; // спереди не принимает
+    b.items.push({ type: itemType });
+    return true;
+  }
+
+  if (b.type === 'Seller') {
+    money += ITEMS[itemType].price;
+    sales.push({ x, z, price: ITEMS[itemType].price });
+    return true;
+  }
+
+  if (b.type === 'Furnace') {
+    if (!RECIPES[itemType] || b.inputs.length >= FURNACE_BUFFER) return false;
+    b.inputs.push(itemType);
+    return true;
+  }
+
+  if (PIPES.includes(b.type)) {
+    if (side === 0) return false;                             // труба не берёт предмет с клетки, на которую смотрит
+    if (b.type === 'PipeTurn' && side !== 3) return false;    // поворот берёт только слева
+    if (b.items.length >= PIPE_MAX_ITEMS) return false;
+    const last = b.items[b.items.length - 1];
+    if (last && last.type !== itemType) return false;         // в трубе только один вид предметов
+    if (last && last.progress < PIPE_GAP) return false;       // на входе нет места
+    b.items.push({ type: itemType, progress: 0, prev: 0, fromX: srcX - x, fromZ: srcZ - z });
+    return true;
+  }
+
+  return false; // жидкая труба ничего не принимает
+}
+
+function tick() {
+  lastTick = performance.now();
+  tickCount++;
+  for (const key in grid) {
+    const b = grid[key];
+    const d = DIRS[b.dir];
+    const frontX = b.x + d[0], frontZ = b.z + d[1];
+    const def = BUILDINGS[b.type];
+
+    if (def.makes) {
+      if (b.cooldown > 0) b.cooldown--;
+      // если выход занят, экстрактор ждёт и пробует снова на следующем тике
+      if (b.cooldown === 0 && give(frontX, frontZ, b.x, b.z, def.makes)) b.cooldown = def.ticks;
+    }
+
+    if (b.type === 'Furnace') {
+      if (!b.cooking && b.inputs.length > 0) {
+        b.cooking = RECIPES[b.inputs.shift()];
+        b.left = b.cooking.ticks;
+      }
+      if (b.cooking) {
+        if (b.left > 0) b.left--;
+        // слиток готов; если выход занят, ждём
+        if (b.left === 0 && give(frontX, frontZ, b.x, b.z, b.cooking.out)) b.cooking = null;
+      }
+    }
+
+    if (PIPES.includes(b.type)) {
+      if (b.out > 0) b.out--;
+      b.items.forEach((it, i) => {
+        it.prev = it.progress;
+        const limit = i === 0 ? 1 : b.items[i - 1].progress - PIPE_GAP; // не наезжать на предыдущий
+        it.progress = Math.min(it.progress + PIPE_SPEED, limit);
+      });
+      const front = b.items[0];
+      if (front && front.progress >= 1 && b.out === 0 && give(frontX, frontZ, b.x, b.z, front.type)) {
+        b.items.shift();
+        b.out = PIPE_OUT_TICKS;
+        b.log.push({ tick: tickCount, type: front.type });
+      }
+      while (b.log.length > 0 && tickCount - b.log[0].tick > LOG_TICKS) b.log.shift();
+    }
+
+    // разветвитель: пробует выходы по очереди, занятый пропускает
+    if (b.type === 'Splitter' && b.item) {
+      for (let i = 0; i < SPLITTER_OUTS.length; i++) {
+        const n = (b.next + i) % SPLITTER_OUTS.length;
+        const o = DIRS[(b.dir + SPLITTER_OUTS[n]) % 4];
+        if (give(b.x + o[0], b.z + o[1], b.x, b.z, b.item)) {
+          b.item = null;
+          b.next = n + 1;
+          break;
+        }
+      }
+    }
+
+    // объединитель: отдаёт вперёд с входов по очереди, пустой вход пропускает.
+    // Если выход не берёт предмет (в трубе другой вид), ждёт, а не пускает другие входы вне очереди —
+    // так труба опустеет и примет новый вид.
+    if (def.inputs) {
+      for (let i = 0; i < def.inputs.length; i++) {
+        const n = (b.next + i) % def.inputs.length;
+        const item = b.slots[def.inputs[n]];
+        if (!item) continue;
+        if (give(frontX, frontZ, b.x, b.z, item)) {
+          b.slots[def.inputs[n]] = null;
+          b.next = n + 1;
+        }
+        break;
+      }
+    }
+
+    if (b.type === 'Storage') {
+      if (b.out > 0) b.out--;
+      if (b.items.length > 0 && b.out === 0 && give(frontX, frontZ, b.x, b.z, b.items[0].type)) {
+        b.items.shift();
+        b.out = STORAGE_OUT_TICKS;
+      }
+    }
+  }
+  refreshCursor(); // цвет призрака зависит от денег
+}
+
+let lastTick = performance.now();
+let speed = 1;                              // ускорение времени (чит-меню)
+let tickTimer = setInterval(tick, TICK_MS);
+
+// ---------- Чит-меню (F1) ----------
+
+// Ускорение = тики идут чаще, сама логика не меняется
+function setSpeed(s) {
+  speed = s;
+  clearInterval(tickTimer);
+  tickTimer = setInterval(tick, TICK_MS / speed);
+  document.querySelectorAll('#cheats [data-speed]').forEach(b => {
+    b.classList.toggle('active', Number(b.dataset.speed) === speed);
+  });
+}
+
+document.querySelectorAll('#cheats [data-speed]').forEach(b => {
+  b.onclick = () => setSpeed(Number(b.dataset.speed));
+});
+document.querySelectorAll('#cheats [data-money]').forEach(b => {
+  b.onclick = () => { money += Number(b.dataset.money); };
+});
+
+// ---------- Отрисовка ----------
+
+const itemMeshes = []; // пул мешей-предметов
+const ITEM_SHAPES = {
+  lump:  new THREE.IcosahedronGeometry(0.06),
+  rock:  new THREE.DodecahedronGeometry(0.07),
+  ingot: new THREE.BoxGeometry(0.16, 0.06, 0.09)
+};
+
+function drawItems() {
+  const alpha = Math.min((performance.now() - lastTick) / (TICK_MS / speed), 1); // плавность между тиками
+  let n = 0;
+  for (const key in grid) {
+    const b = grid[key];
+    if (!PIPES.includes(b.type)) continue;
+    const d = DIRS[b.dir];
+    for (const it of b.items) {
+      if (!itemMeshes[n]) {
+        itemMeshes[n] = new THREE.Mesh(ITEM_SHAPES.lump, material(0xffffff));
+        itemMeshes[n].castShadow = true;
+        scene.add(itemMeshes[n]);
+      }
+      const m = itemMeshes[n++];
+      const p = it.prev + (it.progress - it.prev) * alpha;
+      // едет от края, откуда пришёл, к центру, потом от центра к краю, куда смотрит труба
+      const first = p < 0.5;
+      const ox = first ? it.fromX * (0.5 - p) : d[0] * (p - 0.5);
+      const oz = first ? it.fromZ * (0.5 - p) : d[1] * (p - 0.5);
+      m.position.set(b.x + 0.5 + ox, 0.2, b.z + 0.5 + oz);
+      // слиток лежит вдоль движения
+      m.rotation.y = first ? -Math.atan2(-it.fromZ, -it.fromX) : -b.dir * Math.PI / 2;
+      const item = ITEMS[it.type];
+      m.geometry = ITEM_SHAPES[item.shape];
+      m.material.color.copy(linear(item.color));
+      m.material.metalness = item.shape === 'ingot' ? 0.5 : 0; // слитки блестят
+      m.material.roughness = item.shape === 'ingot' ? 0.4 : 0.9;
+      m.visible = true;
+    }
+  }
+  for (let i = n; i < itemMeshes.length; i++) itemMeshes[i].visible = false;
+}
+
+// "Уголь ×3, Железная руда ×1" или "пусто"
+function itemsText(list) {
+  const counts = {};
+  list.forEach(it => { counts[it.type] = (counts[it.type] || 0) + 1; });
+  const parts = Object.keys(counts).map(t => ITEMS[t].name + ' ×' + counts[t]);
+  return parts.length > 0 ? parts.join(', ') : 'пусто';
+}
+
+// Подсказка над трубой и складом, когда никакое здание не выбрано
+const tip = document.getElementById('tip');
+
+function updateTip() {
+  const b = hover && !selected && !demolish ? grid[hover.x + ',' + hover.z] : null;
+  if (!b || !['Pipe', 'PipeTurn', 'LiquidPipe', 'LiquidPipeTurn', 'Storage'].includes(b.type)) {
+    tip.style.display = 'none';
+    return;
+  }
+  if (PIPES.includes(b.type)) tip.textContent = 'За 10 сек: ' + itemsText(b.log) + '\nСейчас: ' + itemsText(b.items);
+  else if (b.type === 'Storage') tip.textContent = 'Склад: ' + b.items.length + ' / ' + STORAGE_MAX + '\n' + itemsText(b.items);
+  else tip.textContent = 'Пусто';
+  tip.style.left = cursor.x + 15 + 'px';
+  tip.style.top = cursor.y + 15 + 'px';
+  tip.style.display = 'block';
+}
+
+// Анимации зданий — только картинка, смотрят на данные в grid
+function animateBuildings(time, dt) {
+  for (const key in grid) {
+    const b = grid[key];
+    const parts = meshes[key].userData;
+    // бур крутится, пока экстрактор добывает (если выход забит — стоит)
+    if (parts.drill && b.cooldown > 0) parts.drill.rotation.y += dt * 5;
+    if (parts.coin) parts.coin.rotation.y += dt * 2;
+    if (parts.glow) {
+      const cooking = b.cooking && b.left > 0;
+      // окошко печи мерцает при плавке и почти гаснет без дела
+      parts.glow.emissiveIntensity = cooking ? 0.8 + 0.2 * Math.sin(time * 20 + b.x) : 0.15;
+      parts.smoke.forEach((puff, i) => {
+        const p = (time * 0.6 + i / parts.smoke.length) % 1; // 0 — вылетел, 1 — растаял
+        puff.visible = cooking;
+        puff.position.y = 1.36 + p * 0.7;
+        puff.scale.setScalar(1 + p);
+        puff.material.opacity = 0.6 * (1 - p);
+      });
+    }
+  }
+}
+
+// "+N" над продажей для каждой свежей продажи
+function showSales() {
+  for (const s of sales.slice(-20)) { // если вкладка была скрыта, не показываем сотню сразу
+    const p = new THREE.Vector3(s.x + 0.5, 1.1, s.z + 0.5).project(camera);
+    const el = document.createElement('div');
+    el.className = 'sale';
+    el.textContent = '+' + s.price;
+    el.style.left = (p.x + 1) / 2 * innerWidth + 'px';
+    el.style.top = (1 - p.y) / 2 * innerHeight + 'px';
+    el.onanimationend = () => el.remove();
+    document.body.appendChild(el);
+  }
+  sales.length = 0;
+}
+
+const moneyLabel = document.getElementById('money');
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  animateBuildings(clock.elapsedTime, dt);
+  drawItems();
+  showSales();
+  updateTip();
+  if (buildMenu.classList.contains('open')) updateTiles();
+  moneyLabel.textContent = 'Деньги: ' + money;
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
